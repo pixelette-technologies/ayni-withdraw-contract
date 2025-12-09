@@ -50,7 +50,7 @@ contract WithdrawTest is Test {
     vm.txGasPrice(1 gwei); // Manually set gas price. Will be zero in test context otherwise
   }
 
-  function test_deploy() public {
+  function test_deploy() public view {
     assertEq(address(withdraw.ayniToken()), ayni);
     assertEq(address(withdraw.paxgToken()), paxg);
     assertEq(address(withdraw.usdtToken()), usdt);
@@ -76,7 +76,12 @@ contract WithdrawTest is Test {
     assertEq(IERC20(ayni).balanceOf(feeCollector), feeCollectorBalanceBefore + feeAmount, "fee collector mismatch");
     assertEq(IERC20(ayni).balanceOf(alice), aliceBalanceBefore - withdrawAmount, "caller should cover gross amount");
     assertEq(netAmount + feeAmount, withdrawAmount, "net + fee should equal gross");
-    assertEq(withdraw.dailyUsage(alice, dayId), withdrawAmount, "daily usage not tracked");
+    assertEq(withdraw.getDailyUsageTotal(alice, dayId), withdrawAmount, "daily usage total mismatch");
+    assertEq(withdraw.getDailyUsageCount(alice, dayId), 1, "daily usage entry count mismatch");
+
+    (uint64 recordedTs, uint256 recordedAmount) = _getUsageEntry(alice, dayId, 0);
+    assertEq(recordedAmount, withdrawAmount, "recorded amount mismatch");
+    assertGe(recordedTs, uint64(block.timestamp) - 1, "timestamp should be near block time");
   }
 
   function test_withdrawPaxg() public {
@@ -91,6 +96,43 @@ contract WithdrawTest is Test {
     assertEq(IERC20(paxg).balanceOf(recipient), netAmount, "recipient should receive net PAXG");
     assertEq(IERC20(paxg).balanceOf(feeCollector), feeCollectorBalanceBefore + feeAmount, "fee collector mismatch");
     assertEq(IERC20(paxg).balanceOf(alice), aliceBalanceBefore - withdrawAmount, "caller should cover gross amount");
-    assertEq(withdraw.dailyUsage(alice, dayId), 0, "PAXG should not count toward AYNI limits");
+    assertEq(withdraw.getDailyUsageTotal(alice, dayId), 0, "PAXG should not affect AYNI usage");
+    assertEq(withdraw.getDailyUsageCount(alice, dayId), 0, "PAXG should not add entries");
+  }
+
+  function test_withdrawMultipleEntries() public {
+    uint64 dayId = uint64(block.timestamp / 1 days);
+    uint256[3] memory amounts = [
+      uint256(50 * (10 ** ayniDecimals)),
+      uint256(75 * (10 ** ayniDecimals)),
+      uint256(25 * (10 ** ayniDecimals))
+    ];
+
+    uint256 expectedTotal;
+    for (uint256 i = 0; i < amounts.length; i++) {
+      expectedTotal += amounts[i];
+      vm.prank(alice);
+      withdraw.withdraw(Withdraw.Asset.AYNI, amounts[i], recipient);
+      vm.warp(block.timestamp + 1);
+    }
+
+    assertEq(withdraw.getDailyUsageTotal(alice, dayId), expectedTotal, "aggregate total mismatch");
+    assertEq(withdraw.getDailyUsageCount(alice, dayId), amounts.length, "entry count mismatch");
+
+    Withdraw.WithdrawalEntry[] memory entries = withdraw.getDailyUsageEntries(alice, dayId);
+    assertEq(entries.length, amounts.length, "entries length mismatch");
+    for (uint256 i = 0; i < entries.length; i++) {
+      assertEq(entries[i].amount, amounts[i], "entry amount mismatch");
+      assertGe(entries[i].timestamp, dayId * 1 days, "timestamp should belong to day");
+    }
+  }
+
+  function _getUsageEntry(address user, uint64 dayId, uint256 index)
+    private
+    view
+    returns (uint64 timestamp, uint256 amount)
+  {
+    Withdraw.WithdrawalEntry memory entry = withdraw.getDailyUsageEntry(user, dayId, index);
+    return (entry.timestamp, entry.amount);
   }
 }
