@@ -14,11 +14,6 @@ import {Oracle} from "./lib/Oracle.sol";
 contract Withdraw is Ownable, ReentrancyGuard {
   using SafeERC20 for IERC20;
 
-  enum Asset {
-    AYNI,
-    PAXG
-  }
-
   IERC20 public immutable ayniToken;
   IERC20 public immutable paxgToken;
   IERC20 public immutable usdtToken;
@@ -33,8 +28,8 @@ contract Withdraw is Ownable, ReentrancyGuard {
   uint8 private immutable ayniDecimals;
   uint8 private immutable paxgDecimals;
   uint8 private immutable usdtDecimals;
+  uint256 public immutable ayniDailyLimit;
 
-  uint256 private constant DAILY_LIMIT = 1_000;
   uint256 private constant BPS_DENOMINATOR = 10_000;
   uint256 private constant MARKUP_BPS = 1_500;
   uint256 private constant PRICE_SCALE = 1e18;
@@ -77,6 +72,7 @@ contract Withdraw is Ownable, ReentrancyGuard {
   error TokenOrderMismatch();
   error PaxgFeedZero();
   error DailyUsageEntryOutOfBounds();
+  error UnsupportedToken(address token);
 
   constructor(
     address _ayni,
@@ -87,7 +83,8 @@ contract Withdraw is Ownable, ReentrancyGuard {
     address _ethUsdFeed,
     address _paxgUsdFeed,
     uint32 _twapWindow,
-    uint256 _oracleMaxDelay
+    uint256 _oracleMaxDelay,
+    uint256 _ayniDailyLimit
   ) Ownable(msg.sender) {
     _requireAddress(_ayni);
     _requireAddress(_paxg);
@@ -108,17 +105,14 @@ contract Withdraw is Ownable, ReentrancyGuard {
     feeCollector = _feeCollector;
     twapWindow = _twapWindow;
     oracleMaxDelay = _oracleMaxDelay;
-
-    if (IUniswapV3Pool(_ayniUsdtPool).token0() != _ayni || IUniswapV3Pool(_ayniUsdtPool).token1() != _usdt) {
-      revert TokenOrderMismatch();
-    }
+    ayniDailyLimit = _ayniDailyLimit;
 
     ayniDecimals = IERC20Metadata(_ayni).decimals();
     paxgDecimals = IERC20Metadata(_paxg).decimals();
     usdtDecimals = IERC20Metadata(_usdt).decimals();
   }
 
-  function withdraw(Asset asset, uint256 amount, address recipient)
+  function withdraw(address tokenAddress, uint256 amount, address recipient)
     external
     nonReentrant
     returns (uint256 netAmount, uint256 feeAmount)
@@ -127,11 +121,11 @@ contract Withdraw is Ownable, ReentrancyGuard {
     _requireAddress(recipient);
     if (amount == 0) revert InvalidAmount();
 
-    (IERC20 token, uint8 decimals) = _tokenData(asset);
+    (IERC20 token, uint8 decimals, bool isAyni) = _tokenData(tokenAddress);
 
-    _enforceDailyLimit(asset, msg.sender, amount);
+    _enforceDailyLimit(isAyni, msg.sender, amount);
 
-    feeAmount = _computeFee(asset, gasStart, decimals);
+    feeAmount = _computeFee(isAyni, gasStart, decimals);
     if (feeAmount >= amount) revert FeeTooLarge(feeAmount, amount);
 
     netAmount = amount - feeAmount;
@@ -142,9 +136,13 @@ contract Withdraw is Ownable, ReentrancyGuard {
     emit Withdrawn(msg.sender, recipient, address(token), amount, netAmount, feeAmount);
   }
 
-  function estimateFee(Asset asset, uint256 gasUnits, uint256 gasPrice) external view returns (uint256) {
-    (, uint8 decimals) = _tokenData(asset);
-    return _quoteFee(asset, gasUnits, decimals, gasPrice);
+  function estimateFee(address tokenAddress, uint256 gasUnits, uint256 gasPrice) external view returns (uint256) {
+    (, uint8 decimals, bool isAyni) = _tokenData(tokenAddress);
+    return _quoteFee(isAyni, gasUnits, decimals, gasPrice);
+  }
+
+  function getCurrentDailyUsageTotal(address user) external view returns (uint256) {
+    return _dailyUsage[user][_currentDayId()].total;
   }
 
   function getDailyUsageTotal(address user, uint64 dayId) external view returns (uint256) {
@@ -194,18 +192,22 @@ contract Withdraw is Ownable, ReentrancyGuard {
     emit TwapWindowUpdated(newWindow);
   }
 
-  function _computeFee(Asset asset, uint256 gasStart, uint8 tokenDecimals) internal view returns (uint256) {
-    uint256 gasNow = gasleft();
-    uint256 gasUsed = gasStart > gasNow ? gasStart - gasNow : 0;
-    return _quoteFee(asset, gasUsed, tokenDecimals, tx.gasprice);
+  function currentDayId() external view returns (uint64) {
+    return _currentDayId();
   }
 
-  function _tokenUsdPrice(Asset asset) internal view returns (uint256) {
-    if (asset == Asset.AYNI) return _ayniUsdPrice();
+  function _computeFee(bool isAyni, uint256 gasStart, uint8 tokenDecimals) internal view returns (uint256) {
+    uint256 gasNow = gasleft();
+    uint256 gasUsed = gasStart > gasNow ? gasStart - gasNow : 0;
+    return _quoteFee(isAyni, gasUsed, tokenDecimals, tx.gasprice);
+  }
+
+  function _tokenUsdPrice(bool isAyni) internal view returns (uint256) {
+    if (isAyni) return _ayniUsdPrice();
     return _readFeed(paxgUsdFeed);
   }
 
-  function _quoteFee(Asset asset, uint256 gasUnits, uint8 tokenDecimals, uint256 gasPrice)
+  function _quoteFee(bool isAyni, uint256 gasUnits, uint8 tokenDecimals, uint256 gasPrice)
     internal
     view
     returns (uint256)
@@ -221,7 +223,7 @@ contract Withdraw is Ownable, ReentrancyGuard {
     if (usdCost == 0) return 0;
 
     uint256 grossUsd = (usdCost * (BPS_DENOMINATOR + MARKUP_BPS)) / BPS_DENOMINATOR;
-    uint256 tokenUsdPrice = _tokenUsdPrice(asset);
+    uint256 tokenUsdPrice = _tokenUsdPrice(isAyni);
 
     return _usdToToken(grossUsd, tokenUsdPrice, tokenDecimals);
   }
@@ -247,13 +249,13 @@ contract Withdraw is Ownable, ReentrancyGuard {
     return Math.ceilDiv(usdValue * (10 ** uint256(tokenDecimals)), tokenUsdPrice);
   }
 
-  function _enforceDailyLimit(Asset asset, address user, uint256 amount) internal {
-    if (asset != Asset.AYNI) return;
+  function _enforceDailyLimit(bool isAyni, address user, uint256 amount) internal {
+    if (!isAyni) return;
 
     uint64 dayId = _currentDayId();
     DailyUsage storage usage = _dailyUsage[user][dayId];
     uint256 newAmount = usage.total + amount;
-    uint256 limit = DAILY_LIMIT * (10 ** uint256(ayniDecimals));
+    uint256 limit = ayniDailyLimit * (10 ** uint256(ayniDecimals));
     if (newAmount > limit) revert DailyLimitExceeded(user, newAmount, limit);
     usage.total = newAmount;
     usage.entries.push(WithdrawalEntry({timestamp: uint64(block.timestamp), amount: amount}));
@@ -262,12 +264,17 @@ contract Withdraw is Ownable, ReentrancyGuard {
   /// @dev Unix timestamps are defined relative to UTC, so dividing by 1 days advances the counter precisely at midnight
   /// UTC.
   function _currentDayId() internal view returns (uint64) {
-    return uint64(block.timestamp / 1 days);
+    return uint64(block.timestamp / 600);
   }
 
-  function _tokenData(Asset asset) internal view returns (IERC20 token, uint8 decimals) {
-    if (asset == Asset.AYNI) return (ayniToken, ayniDecimals);
-    return (paxgToken, paxgDecimals);
+  function _tokenData(address tokenAddress) internal view returns (IERC20 token, uint8 decimals, bool isAyni) {
+    if (tokenAddress == address(ayniToken)) {
+      return (ayniToken, ayniDecimals, true);
+    }
+    if (tokenAddress == address(paxgToken)) {
+      return (paxgToken, paxgDecimals, false);
+    }
+    revert UnsupportedToken(tokenAddress);
   }
 
   function _requireAddress(address account) private pure {

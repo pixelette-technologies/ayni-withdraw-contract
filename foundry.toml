@@ -16,3 +16,6 @@
 
 [rpc_endpoints]
   mainnet = "${ETHEREUM_MAINNET_RPC}"
+
+[etherscan]
+  mainnet = { key = "${ETHEREUM_MAINNET_ETHERSCAN_API}"}

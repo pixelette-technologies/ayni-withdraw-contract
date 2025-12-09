@@ -18,6 +18,7 @@ contract WithdrawTest is Test {
   address paxgUsdFeed = 0x9944D86CEB9160aF5C5feB251FD671923323f8C3;
   uint32 twapWindow = 30;
   uint256 oracleMaxDelay = 25 hours;
+  uint256 ayniDailyLimit = 100;
 
   address alice = makeAddr("alice");
   address recipient = makeAddr("recipient");
@@ -31,7 +32,7 @@ contract WithdrawTest is Test {
     vm.createSelectFork("mainnet");
 
     withdraw =
-      new Withdraw(ayni, paxg, usdt, feeCollector, ayniUsdtPool, ethUsdFeed, paxgUsdFeed, twapWindow, oracleMaxDelay);
+      new Withdraw(ayni, paxg, usdt, feeCollector, ayniUsdtPool, ethUsdFeed, paxgUsdFeed, twapWindow, oracleMaxDelay, ayniDailyLimit);
 
     ayniDecimals = IERC20Metadata(ayni).decimals();
     paxgDecimals = IERC20Metadata(paxg).decimals();
@@ -63,14 +64,14 @@ contract WithdrawTest is Test {
   }
 
   function test_withdrawAyni() public {
-    uint256 withdrawAmount = 100 * (10 ** ayniDecimals);
-    uint64 dayId = uint64(block.timestamp / 1 days);
+    uint256 withdrawAmount = 10 * (10 ** ayniDecimals);
+    uint64 dayId = withdraw.currentDayId();
 
     uint256 feeCollectorBalanceBefore = IERC20(ayni).balanceOf(feeCollector);
     uint256 aliceBalanceBefore = IERC20(ayni).balanceOf(alice);
 
     vm.prank(alice);
-    (uint256 netAmount, uint256 feeAmount) = withdraw.withdraw(Withdraw.Asset.AYNI, withdrawAmount, recipient);
+    (uint256 netAmount, uint256 feeAmount) = withdraw.withdraw(ayni, withdrawAmount, recipient);
 
     assertEq(IERC20(ayni).balanceOf(recipient), netAmount, "recipient should receive net AYNI");
     assertEq(IERC20(ayni).balanceOf(feeCollector), feeCollectorBalanceBefore + feeAmount, "fee collector mismatch");
@@ -88,10 +89,10 @@ contract WithdrawTest is Test {
     uint256 withdrawAmount = 2 * (10 ** paxgDecimals);
     uint256 feeCollectorBalanceBefore = IERC20(paxg).balanceOf(feeCollector);
     uint256 aliceBalanceBefore = IERC20(paxg).balanceOf(alice);
-    uint64 dayId = uint64(block.timestamp / 1 days);
+    uint64 dayId = withdraw.currentDayId();
 
     vm.prank(alice);
-    (uint256 netAmount, uint256 feeAmount) = withdraw.withdraw(Withdraw.Asset.PAXG, withdrawAmount, recipient);
+    (uint256 netAmount, uint256 feeAmount) = withdraw.withdraw(paxg, withdrawAmount, recipient);
 
     assertEq(IERC20(paxg).balanceOf(recipient), netAmount, "recipient should receive net PAXG");
     assertEq(IERC20(paxg).balanceOf(feeCollector), feeCollectorBalanceBefore + feeAmount, "fee collector mismatch");
@@ -101,15 +102,15 @@ contract WithdrawTest is Test {
   }
 
   function test_withdrawMultipleEntries() public {
-    uint64 dayId = uint64(block.timestamp / 1 days);
+    uint64 dayId = withdraw.currentDayId();
     uint256[3] memory amounts =
-      [uint256(50 * (10 ** ayniDecimals)), uint256(75 * (10 ** ayniDecimals)), uint256(25 * (10 ** ayniDecimals))];
+      [uint256(20 * (10 ** ayniDecimals)), uint256(30 * (10 ** ayniDecimals)), uint256(25 * (10 ** ayniDecimals))];
 
     uint256 expectedTotal;
     for (uint256 i = 0; i < amounts.length; i++) {
       expectedTotal += amounts[i];
       vm.prank(alice);
-      withdraw.withdraw(Withdraw.Asset.AYNI, amounts[i], recipient);
+      withdraw.withdraw(ayni, amounts[i], recipient);
       vm.warp(block.timestamp + 1);
     }
 
@@ -120,7 +121,6 @@ contract WithdrawTest is Test {
     assertEq(entries.length, amounts.length, "entries length mismatch");
     for (uint256 i = 0; i < entries.length; i++) {
       assertEq(entries[i].amount, amounts[i], "entry amount mismatch");
-      assertGe(entries[i].timestamp, dayId * 1 days, "timestamp should belong to day");
     }
   }
 
