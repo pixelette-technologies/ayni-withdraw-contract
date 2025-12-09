@@ -33,7 +33,7 @@ contract Withdraw is Ownable, ReentrancyGuard {
 
   address public feeCollector;
   uint32 public twapWindow;
-  uint256 private oracleMaxDelay;
+  uint256 public oracleMaxDelay;
 
   uint8 private immutable ayniDecimals;
   uint8 private immutable paxgDecimals;
@@ -45,7 +45,17 @@ contract Withdraw is Ownable, ReentrancyGuard {
   uint256 private constant PRICE_SCALE = 1e18;
   uint256 private constant GAS_OVERHEAD = 50_000;
 
-  mapping(address => mapping(uint64 => uint256)) public dailyUsage;
+  struct WithdrawalEntry {
+    uint64 timestamp;
+    uint256 amount;
+  }
+
+  struct DailyUsage {
+    uint256 total;
+    WithdrawalEntry[] entries;
+  }
+
+  mapping(address => mapping(uint64 => DailyUsage)) private _dailyUsage;
 
   /**
    * @notice Emitted when the fee collector address is updated.
@@ -128,6 +138,7 @@ contract Withdraw is Ownable, ReentrancyGuard {
 
   /// @notice Thrown when a zero PAXG/USD feed address is provided.
   error PaxgFeedZero();
+  error DailyUsageEntryOutOfBounds();
 
   /**
    * @notice Deploys the withdraw contract.
@@ -207,10 +218,38 @@ contract Withdraw is Ownable, ReentrancyGuard {
 
     netAmount = amount - feeAmount;
 
-    token.safeTransfer(recipient, netAmount);
-    if (feeAmount > 0) token.safeTransfer(feeCollector, feeAmount);
+    token.safeTransferFrom(msg.sender, recipient, netAmount);
+    if (feeAmount > 0) token.safeTransferFrom(msg.sender, feeCollector, feeAmount);
 
     emit Withdrawn(msg.sender, recipient, address(token), amount, netAmount, feeAmount);
+  }
+
+  function estimateFee(Asset asset, uint256 gasUnits, uint256 gasPrice) external view returns (uint256) {
+    (, uint8 decimals) = _tokenData(asset);
+    return _quoteFee(asset, gasUnits, decimals, gasPrice);
+  }
+
+  function getDailyUsageTotal(address user, uint64 dayId) external view returns (uint256) {
+    return _dailyUsage[user][dayId].total;
+  }
+
+  function getDailyUsageCount(address user, uint64 dayId) external view returns (uint256) {
+    return _dailyUsage[user][dayId].entries.length;
+  }
+
+  function getDailyUsageEntry(address user, uint64 dayId, uint256 index) external view returns (WithdrawalEntry memory) {
+    DailyUsage storage usage = _dailyUsage[user][dayId];
+    if (index >= usage.entries.length) revert DailyUsageEntryOutOfBounds();
+    return usage.entries[index];
+  }
+
+  function getDailyUsageEntries(address user, uint64 dayId) external view returns (WithdrawalEntry[] memory) {
+    DailyUsage storage usage = _dailyUsage[user][dayId];
+    WithdrawalEntry[] memory entries = new WithdrawalEntry[](usage.entries.length);
+    for (uint256 i = 0; i < usage.entries.length; i++) {
+      entries[i] = usage.entries[i];
+    }
+    return entries;
   }
 
   /**
@@ -263,9 +302,23 @@ contract Withdraw is Ownable, ReentrancyGuard {
   function _computeFee(Asset asset, uint256 gasStart, uint8 tokenDecimals) internal view returns (uint256) {
     uint256 gasNow = gasleft();
     uint256 gasUsed = gasStart > gasNow ? gasStart - gasNow : 0;
-    gasUsed += GAS_OVERHEAD;
+    return _quoteFee(asset, gasUsed, tokenDecimals, tx.gasprice);
+  }
 
-    uint256 weiCost = gasUsed * tx.gasprice;
+  function _tokenUsdPrice(Asset asset) internal view returns (uint256) {
+    if (asset == Asset.AYNI) return _ayniUsdPrice();
+    return _readFeed(paxgUsdFeed);
+  }
+
+  function _quoteFee(Asset asset, uint256 gasUnits, uint8 tokenDecimals, uint256 gasPrice)
+    internal
+    view
+    returns (uint256)
+  {
+    if (gasPrice == 0) return 0;
+
+    gasUnits += GAS_OVERHEAD;
+    uint256 weiCost = gasUnits * gasPrice;
     if (weiCost == 0) return 0;
 
     uint256 ethUsdPrice = _readFeed(ethUsdFeed);
@@ -278,6 +331,7 @@ contract Withdraw is Ownable, ReentrancyGuard {
     return _usdToToken(grossUsd, tokenUsdPrice, tokenDecimals);
   }
 
+<<<<<<< HEAD
   /**
    * @notice Estimates the withdraw fee off-chain for given gas parameters.
    * @dev Mirrors the pricing logic of `_computeFee` but takes explicit gas units and gas price.
@@ -357,10 +411,12 @@ contract Withdraw is Ownable, ReentrancyGuard {
     if (asset != Asset.AYNI) return;
 
     uint64 dayId = _currentDayId();
-    uint256 newAmount = dailyUsage[user][dayId] + amount;
+    DailyUsage storage usage = _dailyUsage[user][dayId];
+    uint256 newAmount = usage.total + amount;
     uint256 limit = DAILY_LIMIT * (10 ** uint256(ayniDecimals));
     if (newAmount > limit) revert DailyLimitExceeded(user, newAmount, limit);
-    dailyUsage[user][dayId] = newAmount;
+    usage.total = newAmount;
+    usage.entries.push(WithdrawalEntry({timestamp: uint64(block.timestamp), amount: amount}));
   }
 
   /**
