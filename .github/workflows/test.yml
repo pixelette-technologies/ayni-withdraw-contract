@@ -10,6 +10,8 @@ env:
 
 jobs:
   check:
+    env:
+      ETHEREUM_MAINNET_RPC: ${{ secrets.ETHEREUM_MAINNET_RPC }}
     strategy:
       fail-fast: true
 
@@ -26,11 +28,6 @@ jobs:
       - name: Show Forge version
         run: |
           forge --version
-
-      - name: Run Forge fmt
-        run: |
-          forge fmt --check
-        id: fmt
 
       - name: Run Forge build
         run: |

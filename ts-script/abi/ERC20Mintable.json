@@ -1,0 +1,35 @@
+{
+  "abi": [
+    {
+      "type": "function",
+      "name": "mint",
+      "stateMutability": "nonpayable",
+      "inputs": [
+        { "name": "amount", "type": "uint256", "internalType": "uint256" }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "approve",
+      "stateMutability": "nonpayable",
+      "inputs": [
+        { "name": "spender", "type": "address", "internalType": "address" },
+        { "name": "value", "type": "uint256", "internalType": "uint256" }
+      ],
+      "outputs": [
+        { "name": "", "type": "bool", "internalType": "bool" }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "decimals",
+      "stateMutability": "view",
+      "inputs": [],
+      "outputs": [
+        { "name": "", "type": "uint8", "internalType": "uint8" }
+      ]
+    }
+  ]
+}
+
