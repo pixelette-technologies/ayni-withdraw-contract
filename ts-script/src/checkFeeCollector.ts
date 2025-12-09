@@ -11,10 +11,10 @@ dotenv.config();
 
 async function main() {
   const mintAmountInput = "20";
-  const CONTRACT_ADDRESS = process.env.WITHDRAW_ADDRESS ?? "0xf9238Abdf4c597a3Cfe1191a2263bb6459835401";
+  const CONTRACT_ADDRESS = "0xf9238Abdf4c597a3Cfe1191a2263bb6459835401";
   const providerUrl = process.env.ETHEREUM_MAINNET_RPC;
   const privateKey = process.env.PRIVATE_KEY;
-  const resetIntervalSec = Number(process.env.RESET_INTERVAL ?? 600);
+  const resetIntervalSec = Number(600);
 
   if (!providerUrl) {
     throw new Error("ETHEREUM_MAINNET_RPC env var is required");
