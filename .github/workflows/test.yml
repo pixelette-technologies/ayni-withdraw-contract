@@ -10,6 +10,8 @@ env:
 
 jobs:
   check:
+    env:
+      ETHEREUM_MAINNET_RPC: ${{ secrets.ETHEREUM_MAINNET_RPC }}
     strategy:
       fail-fast: true
 
