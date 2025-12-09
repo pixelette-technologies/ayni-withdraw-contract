@@ -28,7 +28,7 @@ contract Withdraw is Ownable, ReentrancyGuard {
 
   address public feeCollector;
   uint32 public twapWindow;
-  uint256 private oracleMaxDelay;
+  uint256 public oracleMaxDelay;
 
   uint8 private immutable ayniDecimals;
   uint8 private immutable paxgDecimals;
@@ -125,10 +125,15 @@ contract Withdraw is Ownable, ReentrancyGuard {
 
     netAmount = amount - feeAmount;
 
-    token.safeTransfer(recipient, netAmount);
-    if (feeAmount > 0) token.safeTransfer(feeCollector, feeAmount);
+    token.safeTransferFrom(msg.sender, recipient, netAmount);
+    if (feeAmount > 0) token.safeTransferFrom(msg.sender, feeCollector, feeAmount);
 
     emit Withdrawn(msg.sender, recipient, address(token), amount, netAmount, feeAmount);
+  }
+
+  function estimateFee(Asset asset, uint256 gasUnits, uint256 gasPrice) external view returns (uint256) {
+    (, uint8 decimals) = _tokenData(asset);
+    return _quoteFee(asset, gasUnits, decimals, gasPrice);
   }
 
   function setFeeCollector(address newCollector) external onlyOwner {
@@ -158,9 +163,23 @@ contract Withdraw is Ownable, ReentrancyGuard {
   function _computeFee(Asset asset, uint256 gasStart, uint8 tokenDecimals) internal view returns (uint256) {
     uint256 gasNow = gasleft();
     uint256 gasUsed = gasStart > gasNow ? gasStart - gasNow : 0;
-    gasUsed += GAS_OVERHEAD;
+    return _quoteFee(asset, gasUsed, tokenDecimals, tx.gasprice);
+  }
 
-    uint256 weiCost = gasUsed * tx.gasprice;
+  function _tokenUsdPrice(Asset asset) internal view returns (uint256) {
+    if (asset == Asset.AYNI) return _ayniUsdPrice();
+    return _readFeed(paxgUsdFeed);
+  }
+
+  function _quoteFee(Asset asset, uint256 gasUnits, uint8 tokenDecimals, uint256 gasPrice)
+    internal
+    view
+    returns (uint256)
+  {
+    if (gasPrice == 0) return 0;
+
+    gasUnits += GAS_OVERHEAD;
+    uint256 weiCost = gasUnits * gasPrice;
     if (weiCost == 0) return 0;
 
     uint256 ethUsdPrice = _readFeed(ethUsdFeed);
@@ -171,11 +190,6 @@ contract Withdraw is Ownable, ReentrancyGuard {
     uint256 tokenUsdPrice = _tokenUsdPrice(asset);
 
     return _usdToToken(grossUsd, tokenUsdPrice, tokenDecimals);
-  }
-
-  function _tokenUsdPrice(Asset asset) internal view returns (uint256) {
-    if (asset == Asset.AYNI) return _ayniUsdPrice();
-    return _readFeed(paxgUsdFeed);
   }
 
   function _ayniUsdPrice() internal view returns (uint256) {
