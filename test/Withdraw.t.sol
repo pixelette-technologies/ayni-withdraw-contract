@@ -102,11 +102,8 @@ contract WithdrawTest is Test {
 
   function test_withdrawMultipleEntries() public {
     uint64 dayId = uint64(block.timestamp / 1 days);
-    uint256[3] memory amounts = [
-      uint256(50 * (10 ** ayniDecimals)),
-      uint256(75 * (10 ** ayniDecimals)),
-      uint256(25 * (10 ** ayniDecimals))
-    ];
+    uint256[3] memory amounts =
+      [uint256(50 * (10 ** ayniDecimals)), uint256(75 * (10 ** ayniDecimals)), uint256(25 * (10 ** ayniDecimals))];
 
     uint256 expectedTotal;
     for (uint256 i = 0; i < amounts.length; i++) {

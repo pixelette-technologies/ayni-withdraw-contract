@@ -5,7 +5,6 @@ import {Script} from "forge-std/Script.sol";
 import {Withdraw} from "../src/Withdraw.sol";
 
 contract DeployWithdraw is Script {
-
   address ayni = 0x9d70baE2944Ffa477F37Bae227fd981E6eB31982;
   address paxg = 0x45804880De22913dAFE09f4980848ECE6EcbAf78;
   address usdt = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
@@ -20,8 +19,9 @@ contract DeployWithdraw is Script {
     vm.createSelectFork("mainnet");
     vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
 
-    Withdraw withdraw = new Withdraw(ayni, paxg, usdt, feeCollector, ayniUsdtPool, ethUsdFeed, paxgUsdFeed, twapWindow, oracleMaxDelay);
-    
+    Withdraw withdraw =
+      new Withdraw(ayni, paxg, usdt, feeCollector, ayniUsdtPool, ethUsdFeed, paxgUsdFeed, twapWindow, oracleMaxDelay);
+
     vm.stopBroadcast();
   }
 }
