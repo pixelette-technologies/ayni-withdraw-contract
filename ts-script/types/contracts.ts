@@ -7,9 +7,14 @@ export type WithdrawContract = ethers.Contract & {
     token: string,
     amount: bigint,
     recipient: string,
+    fee: bigint,
+    deadline: bigint,
+    signature: string,
     overrides?: ethers.ContractTransactionOptions
   ): Promise<ethers.ContractTransactionResponse>;
   getCurrentDailyUsageTotal(user: string): Promise<bigint>;
+  nonces(user: string): Promise<bigint>;
+  estimateFee(token: string, gasUnits: bigint, gasPrice: bigint): Promise<bigint>;
 };
 
 export type MintableErc20Contract = ethers.Contract & {
