@@ -31,6 +31,7 @@ contract WithdrawTest is Test {
   uint256 oracleMaxDelay = 25 hours;
   uint256 ayniDailyLimit = 100;
 
+  address owner = makeAddr("owner");
   address alice = makeAddr("alice");
   address recipient = makeAddr("recipient");
 
@@ -42,6 +43,7 @@ contract WithdrawTest is Test {
   function setUp() public {
     vm.createSelectFork("mainnet");
 
+    vm.startPrank(owner);
     withdraw =
       new Withdraw(ayni, paxg, usdt, feeCollector, ayniUsdtPool, ethUsdFeed, paxgUsdFeed, twapWindow, oracleMaxDelay, ayniDailyLimit);
 
@@ -55,6 +57,8 @@ contract WithdrawTest is Test {
 
     deal(ayni, alice, initialAyniBalance);
     deal(paxg, alice, initialPaxgBalance);
+
+    vm.stopPrank();
 
     vm.prank(alice);
     IERC20(ayni).approve(address(withdraw), type(uint256).max);
@@ -74,7 +78,7 @@ contract WithdrawTest is Test {
     assertEq(address(withdraw.paxgUsdFeed()), paxgUsdFeed);
     assertEq(withdraw.twapWindow(), twapWindow);
     assertEq(withdraw.oracleMaxDelay(), oracleMaxDelay);
-    assertTrue(withdraw.isSigner(address(this)));
+    assertTrue(withdraw.isSigner(owner));
     assertTrue(withdraw.isSigner(signer));
   }
 
@@ -151,6 +155,13 @@ contract WithdrawTest is Test {
     for (uint256 i = 0; i < entries.length; i++) {
       assertEq(entries[i].amount, amounts[i], "entry amount mismatch");
     }
+  }
+
+  function test_setAyniDailyLimit() public {
+    uint256 newLimit = 1000 * (10 ** ayniDecimals);
+    vm.prank(owner);
+    withdraw.setAyniDailyLimit(newLimit);
+    assertEq(withdraw.ayniDailyLimit(), newLimit);
   }
 
   function _getUsageEntry(address user, uint64 dayId, uint256 index)

@@ -27,6 +27,7 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
   IUniswapV3Pool public immutable ayniUsdtPool;
   AggregatorV3Interface public immutable ethUsdFeed;
   AggregatorV3Interface public paxgUsdFeed;
+  uint256 public ayniDailyLimit;
 
   address public feeCollector;
   uint32 public twapWindow;
@@ -35,7 +36,6 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
   uint8 private immutable ayniDecimals;
   uint8 private immutable paxgDecimals;
   uint8 private immutable usdtDecimals;
-  uint256 public immutable ayniDailyLimit;
 
   uint256 private constant BPS_DENOMINATOR = 10_000;
   uint256 private constant MARKUP_BPS = 1_500;
@@ -69,6 +69,7 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
     uint256 feeAmount
   );
   event SignerUpdated(address indexed signer, bool allowed);
+  event AyniDailyLimitUpdated(uint256 newLimit);
 
   error InvalidRecipient();
   error InvalidAmount();
@@ -229,6 +230,11 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
     emit TwapWindowUpdated(newWindow);
   }
 
+  function setAyniDailyLimit(uint256 newLimit) external onlyOwner {
+    ayniDailyLimit = newLimit;
+    emit AyniDailyLimitUpdated(newLimit);
+  }
+
   function currentDayId() external view returns (uint64) {
     return _currentDayId();
   }
@@ -301,7 +307,7 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
   /// @dev Unix timestamps are defined relative to UTC, so dividing by 1 days advances the counter precisely at midnight
   /// UTC.
   function _currentDayId() internal view returns (uint64) {
-    return uint64(block.timestamp / 600);
+    return uint64(block.timestamp / 1 days);
   }
 
   function _tokenData(address tokenAddress) internal view returns (IERC20 token, uint8 decimals, bool isAyni) {
