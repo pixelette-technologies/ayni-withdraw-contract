@@ -7,12 +7,19 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {AggregatorV3Interface} from "./interface/IAggregatorV3.sol";
 import {IUniswapV3Pool} from "./interface/IUniswapV3Pool.sol";
 import {Oracle} from "./lib/Oracle.sol";
 
-contract Withdraw is Ownable, ReentrancyGuard {
+contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
   using SafeERC20 for IERC20;
+
+  bytes32 private constant WITHDRAW_TYPEHASH =
+    keccak256(
+      "Withdraw(address caller,address token,uint256 amount,address recipient,uint256 fee,uint256 nonce,uint256 deadline)"
+    );
 
   IERC20 public immutable ayniToken;
   IERC20 public immutable paxgToken;
@@ -46,6 +53,8 @@ contract Withdraw is Ownable, ReentrancyGuard {
   }
 
   mapping(address => mapping(uint64 => DailyUsage)) private _dailyUsage;
+  mapping(address => uint256) private _nonces;
+  mapping(address => bool) public isSigner;
 
   event FeeCollectorUpdated(address indexed newCollector);
   event PaxgFeedUpdated(address indexed newFeed);
@@ -59,6 +68,7 @@ contract Withdraw is Ownable, ReentrancyGuard {
     uint256 netAmount,
     uint256 feeAmount
   );
+  event SignerUpdated(address indexed signer, bool allowed);
 
   error InvalidRecipient();
   error InvalidAmount();
@@ -72,7 +82,17 @@ contract Withdraw is Ownable, ReentrancyGuard {
   error TokenOrderMismatch();
   error PaxgFeedZero();
   error DailyUsageEntryOutOfBounds();
+  error InvalidSigner(address signer);
+  error SignatureExpired(uint256 deadline);
   error UnsupportedToken(address token);
+
+  error InvalidInput();
+    error AlreadyClaimed();
+    error StakeNotFound();
+    error SaltAlreadyUsed();
+    error InvalidClaimAddress();
+    error StakeAlreadyExists();
+    error InsufficientBalance();
 
   constructor(
     address _ayni,
@@ -85,7 +105,7 @@ contract Withdraw is Ownable, ReentrancyGuard {
     uint32 _twapWindow,
     uint256 _oracleMaxDelay,
     uint256 _ayniDailyLimit
-  ) Ownable(msg.sender) {
+  ) Ownable(msg.sender) EIP712("Withdraw", "1") {
     _requireAddress(_ayni);
     _requireAddress(_paxg);
     _requireAddress(_usdt);
@@ -107,28 +127,35 @@ contract Withdraw is Ownable, ReentrancyGuard {
     oracleMaxDelay = _oracleMaxDelay;
     ayniDailyLimit = _ayniDailyLimit;
 
+    isSigner[msg.sender] = true;
+    emit SignerUpdated(msg.sender, true);
+
     ayniDecimals = IERC20Metadata(_ayni).decimals();
     paxgDecimals = IERC20Metadata(_paxg).decimals();
     usdtDecimals = IERC20Metadata(_usdt).decimals();
   }
 
-  function withdraw(address tokenAddress, uint256 amount, address recipient)
-    external
-    nonReentrant
-    returns (uint256 netAmount, uint256 feeAmount)
-  {
-    uint256 gasStart = gasleft();
+  function withdraw(
+    address tokenAddress,
+    uint256 amount,
+    address recipient,
+    uint256 feeAmount,
+    uint256 deadline,
+    bytes calldata signature
+  ) external nonReentrant returns (uint256 netAmount, uint256 feeCharged) {
     _requireAddress(recipient);
     if (amount == 0) revert InvalidAmount();
 
-    (IERC20 token, uint8 decimals, bool isAyni) = _tokenData(tokenAddress);
+    (IERC20 token,, bool isAyni) = _tokenData(tokenAddress);
+
+    _verifyAndConsumeSignature(msg.sender, tokenAddress, amount, recipient, feeAmount, deadline, signature);
+
+    if (feeAmount >= amount) revert FeeTooLarge(feeAmount, amount);
 
     _enforceDailyLimit(isAyni, msg.sender, amount);
 
-    feeAmount = _computeFee(isAyni, gasStart, decimals);
-    if (feeAmount >= amount) revert FeeTooLarge(feeAmount, amount);
-
     netAmount = amount - feeAmount;
+    feeCharged = feeAmount;
 
     token.safeTransferFrom(msg.sender, recipient, netAmount);
     if (feeAmount > 0) token.safeTransferFrom(msg.sender, feeCollector, feeAmount);
@@ -168,10 +195,20 @@ contract Withdraw is Ownable, ReentrancyGuard {
     return entries;
   }
 
+  function nonces(address owner) external view returns (uint256) {
+    return _nonces[owner];
+  }
+
   function setFeeCollector(address newCollector) external onlyOwner {
     _requireAddress(newCollector);
     feeCollector = newCollector;
     emit FeeCollectorUpdated(newCollector);
+  }
+
+  function setSigner(address signer, bool allowed) external onlyOwner {
+    _requireAddress(signer);
+    isSigner[signer] = allowed;
+    emit SignerUpdated(signer, allowed);
   }
 
   function setPaxgFeed(address newFeed) external onlyOwner {
@@ -279,5 +316,39 @@ contract Withdraw is Ownable, ReentrancyGuard {
 
   function _requireAddress(address account) private pure {
     if (account == address(0)) revert InvalidAddress();
+  }
+
+  function _hashWithdraw(
+    address caller,
+    address token,
+    uint256 amount,
+    address recipient,
+    uint256 feeAmount,
+    uint256 nonce,
+    uint256 deadline
+  ) private pure returns (bytes32) {
+    return keccak256(abi.encode(WITHDRAW_TYPEHASH, caller, token, amount, recipient, feeAmount, nonce, deadline));
+  }
+
+  function _verifyAndConsumeSignature(
+    address caller,
+    address token,
+    uint256 amount,
+    address recipient,
+    uint256 feeAmount,
+    uint256 deadline,
+    bytes calldata signature
+  ) private {
+    if (deadline < block.timestamp) revert SignatureExpired(deadline);
+    uint256 currentNonce = _nonces[caller];
+    bytes32 structHash = _hashWithdraw(caller, token, amount, recipient, feeAmount, currentNonce, deadline);
+    address signer = ECDSA.recover(_hashTypedDataV4(structHash), signature);
+    if (!isSigner[signer]) revert InvalidSigner(signer);
+    _useNonce(caller);
+  }
+
+  function _useNonce(address owner) private returns (uint256 current) {
+    current = _nonces[owner];
+    _nonces[owner] = current + 1;
   }
 }

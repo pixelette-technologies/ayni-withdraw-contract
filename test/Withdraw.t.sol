@@ -5,9 +5,20 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Withdraw} from "../src/Withdraw.sol";
+import {console2} from "forge-std/console2.sol";
 
 contract WithdrawTest is Test {
   Withdraw public withdraw;
+
+  uint256 private constant SIGNER_PK = 0xBEEF;
+  address private signer = vm.addr(SIGNER_PK);
+
+  bytes32 private constant WITHDRAW_TYPEHASH =
+    keccak256(
+      "Withdraw(address caller,address token,uint256 amount,address recipient,uint256 fee,uint256 nonce,uint256 deadline)"
+    );
+  bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
   address ayni = 0x9d70baE2944Ffa477F37Bae227fd981E6eB31982;
   address paxg = 0x45804880De22913dAFE09f4980848ECE6EcbAf78;
@@ -33,6 +44,8 @@ contract WithdrawTest is Test {
 
     withdraw =
       new Withdraw(ayni, paxg, usdt, feeCollector, ayniUsdtPool, ethUsdFeed, paxgUsdFeed, twapWindow, oracleMaxDelay, ayniDailyLimit);
+
+    withdraw.setSigner(signer, true);
 
     ayniDecimals = IERC20Metadata(ayni).decimals();
     paxgDecimals = IERC20Metadata(paxg).decimals();
@@ -61,20 +74,27 @@ contract WithdrawTest is Test {
     assertEq(address(withdraw.paxgUsdFeed()), paxgUsdFeed);
     assertEq(withdraw.twapWindow(), twapWindow);
     assertEq(withdraw.oracleMaxDelay(), oracleMaxDelay);
+    assertTrue(withdraw.isSigner(address(this)));
+    assertTrue(withdraw.isSigner(signer));
   }
 
   function test_withdrawAyni() public {
     uint256 withdrawAmount = 10 * (10 ** ayniDecimals);
     uint64 dayId = withdraw.currentDayId();
+    uint256 feeAmount = withdrawAmount / 10;
+    uint256 deadline = block.timestamp + 1 hours;
+    uint256 nonce = withdraw.nonces(alice);
+    bytes memory sig = _signWithdraw(alice, ayni, withdrawAmount, recipient, feeAmount, nonce, deadline);
 
     uint256 feeCollectorBalanceBefore = IERC20(ayni).balanceOf(feeCollector);
     uint256 aliceBalanceBefore = IERC20(ayni).balanceOf(alice);
 
     vm.prank(alice);
-    (uint256 netAmount, uint256 feeAmount) = withdraw.withdraw(ayni, withdrawAmount, recipient);
+    (uint256 netAmount, uint256 chargedFee) =
+      withdraw.withdraw(ayni, withdrawAmount, recipient, feeAmount, deadline, sig);
 
     assertEq(IERC20(ayni).balanceOf(recipient), netAmount, "recipient should receive net AYNI");
-    assertEq(IERC20(ayni).balanceOf(feeCollector), feeCollectorBalanceBefore + feeAmount, "fee collector mismatch");
+    assertEq(IERC20(ayni).balanceOf(feeCollector), feeCollectorBalanceBefore + chargedFee, "fee collector mismatch");
     assertEq(IERC20(ayni).balanceOf(alice), aliceBalanceBefore - withdrawAmount, "caller should cover gross amount");
     assertEq(netAmount + feeAmount, withdrawAmount, "net + fee should equal gross");
     assertEq(withdraw.getDailyUsageTotal(alice, dayId), withdrawAmount, "daily usage total mismatch");
@@ -90,12 +110,17 @@ contract WithdrawTest is Test {
     uint256 feeCollectorBalanceBefore = IERC20(paxg).balanceOf(feeCollector);
     uint256 aliceBalanceBefore = IERC20(paxg).balanceOf(alice);
     uint64 dayId = withdraw.currentDayId();
+    uint256 feeAmount = withdrawAmount / 20;
+    uint256 deadline = block.timestamp + 1 hours;
+    uint256 nonce = withdraw.nonces(alice);
+    bytes memory sig = _signWithdraw(alice, paxg, withdrawAmount, recipient, feeAmount, nonce, deadline);
 
     vm.prank(alice);
-    (uint256 netAmount, uint256 feeAmount) = withdraw.withdraw(paxg, withdrawAmount, recipient);
+    (uint256 netAmount, uint256 chargedFee) =
+      withdraw.withdraw(paxg, withdrawAmount, recipient, feeAmount, deadline, sig);
 
     assertEq(IERC20(paxg).balanceOf(recipient), netAmount, "recipient should receive net PAXG");
-    assertEq(IERC20(paxg).balanceOf(feeCollector), feeCollectorBalanceBefore + feeAmount, "fee collector mismatch");
+    assertEq(IERC20(paxg).balanceOf(feeCollector), feeCollectorBalanceBefore + chargedFee, "fee collector mismatch");
     assertEq(IERC20(paxg).balanceOf(alice), aliceBalanceBefore - withdrawAmount, "caller should cover gross amount");
     assertEq(withdraw.getDailyUsageTotal(alice, dayId), 0, "PAXG should not affect AYNI usage");
     assertEq(withdraw.getDailyUsageCount(alice, dayId), 0, "PAXG should not add entries");
@@ -109,8 +134,12 @@ contract WithdrawTest is Test {
     uint256 expectedTotal;
     for (uint256 i = 0; i < amounts.length; i++) {
       expectedTotal += amounts[i];
+      uint256 feeAmount = amounts[i] / 20;
+      uint256 deadline = block.timestamp + 1 hours;
+      uint256 nonce = withdraw.nonces(alice);
+      bytes memory sig = _signWithdraw(alice, ayni, amounts[i], recipient, feeAmount, nonce, deadline);
       vm.prank(alice);
-      withdraw.withdraw(ayni, amounts[i], recipient);
+      withdraw.withdraw(ayni, amounts[i], recipient, feeAmount, deadline, sig);
       vm.warp(block.timestamp + 1);
     }
 
@@ -131,5 +160,32 @@ contract WithdrawTest is Test {
   {
     Withdraw.WithdrawalEntry memory entry = withdraw.getDailyUsageEntry(user, dayId, index);
     return (entry.timestamp, entry.amount);
+  }
+
+  function _signWithdraw(
+    address caller,
+    address token,
+    uint256 amount,
+    address to,
+    uint256 feeAmount,
+    uint256 nonce,
+    uint256 deadline
+  ) private view returns (bytes memory) {
+    bytes32 structHash = keccak256(abi.encode(WITHDRAW_TYPEHASH, caller, token, amount, to, feeAmount, nonce, deadline));
+    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+    (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, digest);
+    return abi.encodePacked(r, s, v);
+  }
+
+  function _domainSeparator() private view returns (bytes32) {
+    return keccak256(
+      abi.encode(
+        EIP712_DOMAIN_TYPEHASH,
+        keccak256(bytes("Withdraw")),
+        keccak256(bytes("1")),
+        block.chainid,
+        address(withdraw)
+      )
+    );
   }
 }

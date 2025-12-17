@@ -26,6 +26,9 @@ contract DeployWithdraw is Script {
 
     console.log("Withdraw contract deployed at", address(withdraw));
 
+    withdraw.setSigner(vm.addr(vm.envUint("SIGNER_PRIVATE_KEY")), true);
+    console.log("Signer set to", vm.addr(vm.envUint("SIGNER_PRIVATE_KEY")));
+
     vm.stopBroadcast();
   }
 }
