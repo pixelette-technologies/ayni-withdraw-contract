@@ -13,7 +13,7 @@ contract DeployWithdraw is Script {
   address ayniUsdtPool = 0xfAf41F3761EB08374639955BDE44CBbF3dcC8384;
   address ethUsdFeed = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
   address paxgUsdFeed = 0x9944D86CEB9160aF5C5feB251FD671923323f8C3;
-  uint32 twapWindow = 30;
+  uint32 twapWindow = 60;
   uint256 oracleMaxDelay = 25 hours;
   uint256 ayniDailyLimit = 20_000;
 

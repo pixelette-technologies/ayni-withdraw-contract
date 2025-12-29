@@ -27,7 +27,7 @@ contract WithdrawTest is Test {
   address ayniUsdtPool = 0xfAf41F3761EB08374639955BDE44CBbF3dcC8384;
   address ethUsdFeed = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
   address paxgUsdFeed = 0x9944D86CEB9160aF5C5feB251FD671923323f8C3;
-  uint32 twapWindow = 30;
+  uint32 twapWindow = 60;
   uint256 oracleMaxDelay = 25 hours;
   uint256 ayniDailyLimit = 100;
 
@@ -101,11 +101,11 @@ contract WithdrawTest is Test {
     assertEq(IERC20(ayni).balanceOf(feeCollector), feeCollectorBalanceBefore + chargedFee, "fee collector mismatch");
     assertEq(IERC20(ayni).balanceOf(alice), aliceBalanceBefore - withdrawAmount, "caller should cover gross amount");
     assertEq(netAmount + feeAmount, withdrawAmount, "net + fee should equal gross");
-    assertEq(withdraw.getDailyUsageTotal(alice, dayId), withdrawAmount, "daily usage total mismatch");
+    assertEq(withdraw.getDailyUsageTotal(alice, dayId), netAmount, "daily usage total mismatch");
     assertEq(withdraw.getDailyUsageCount(alice, dayId), 1, "daily usage entry count mismatch");
 
     (uint64 recordedTs, uint256 recordedAmount) = _getUsageEntry(alice, dayId, 0);
-    assertEq(recordedAmount, withdrawAmount, "recorded amount mismatch");
+    assertEq(recordedAmount, netAmount, "recorded amount mismatch");
     assertGe(recordedTs, uint64(block.timestamp) - 1, "timestamp should be near block time");
   }
 
@@ -137,8 +137,9 @@ contract WithdrawTest is Test {
 
     uint256 expectedTotal;
     for (uint256 i = 0; i < amounts.length; i++) {
-      expectedTotal += amounts[i];
       uint256 feeAmount = amounts[i] / 20;
+      uint256 netAmount = amounts[i] - feeAmount;
+      expectedTotal += netAmount;
       uint256 deadline = block.timestamp + 1 hours;
       uint256 nonce = withdraw.nonces(alice);
       bytes memory sig = _signWithdraw(alice, ayni, amounts[i], recipient, feeAmount, nonce, deadline);
@@ -153,7 +154,8 @@ contract WithdrawTest is Test {
     Withdraw.WithdrawalEntry[] memory entries = withdraw.getDailyUsageEntries(alice, dayId);
     assertEq(entries.length, amounts.length, "entries length mismatch");
     for (uint256 i = 0; i < entries.length; i++) {
-      assertEq(entries[i].amount, amounts[i], "entry amount mismatch");
+      uint256 expectedNetAmount = amounts[i] - (amounts[i] / 20);
+      assertEq(entries[i].amount, expectedNetAmount, "entry amount mismatch");
     }
   }
 

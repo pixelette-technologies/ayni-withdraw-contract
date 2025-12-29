@@ -16,6 +16,7 @@ import {Oracle} from "./lib/Oracle.sol";
 contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
   using SafeERC20 for IERC20;
 
+  address private constant UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
   bytes32 private constant WITHDRAW_TYPEHASH =
     keccak256(
       "Withdraw(address caller,address token,uint256 amount,address recipient,uint256 fee,uint256 nonce,uint256 deadline)"
@@ -80,12 +81,15 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
   error OracleDataStale(address feed);
   error OracleAnswerNotPositive(address feed);
   error TwapWindowTooSmall();
+  error TwapWindowTooLarge();
   error TokenOrderMismatch();
   error PaxgFeedZero();
   error DailyUsageEntryOutOfBounds();
   error InvalidSigner(address signer);
   error SignatureExpired(uint256 deadline);
   error UnsupportedToken(address token);
+  error TokenDecimalTooLarge(uint8 decimals);
+  error InvalidV3Pool();
 
   error InvalidInput();
     error AlreadyClaimed();
@@ -115,7 +119,7 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
     _requireAddress(_ethUsdFeed);
     _requireAddress(_paxgUsdFeed);
 
-    if (_twapWindow == 0) revert TwapWindowTooSmall();
+    _checkTwapWindow(_twapWindow);
 
     ayniToken = IERC20(_ayni);
     paxgToken = IERC20(_paxg);
@@ -128,12 +132,17 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
     oracleMaxDelay = _oracleMaxDelay;
     ayniDailyLimit = _ayniDailyLimit;
 
+    _checkV3Pool(_ayniUsdtPool);
+
     isSigner[msg.sender] = true;
     emit SignerUpdated(msg.sender, true);
 
     ayniDecimals = IERC20Metadata(_ayni).decimals();
     paxgDecimals = IERC20Metadata(_paxg).decimals();
     usdtDecimals = IERC20Metadata(_usdt).decimals();
+    if (ayniDecimals > 18) revert TokenDecimalTooLarge(ayniDecimals);
+    if (paxgDecimals > 18) revert TokenDecimalTooLarge(paxgDecimals);
+    if (usdtDecimals > 18) revert TokenDecimalTooLarge(usdtDecimals);
   }
 
   function withdraw(
@@ -153,9 +162,9 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
 
     if (feeAmount >= amount) revert FeeTooLarge(feeAmount, amount);
 
-    _enforceDailyLimit(isAyni, msg.sender, amount);
-
     netAmount = amount - feeAmount;
+    _enforceDailyLimit(isAyni, msg.sender, netAmount);
+
     feeCharged = feeAmount;
 
     token.safeTransferFrom(msg.sender, recipient, netAmount);
@@ -225,7 +234,7 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
   }
 
   function setTwapWindow(uint32 newWindow) external onlyOwner {
-    if (newWindow == 0) revert TwapWindowTooSmall();
+    _checkTwapWindow(newWindow);
     twapWindow = newWindow;
     emit TwapWindowUpdated(newWindow);
   }
@@ -356,5 +365,16 @@ contract Withdraw is Ownable, ReentrancyGuard, EIP712 {
   function _useNonce(address owner) private returns (uint256 current) {
     current = _nonces[owner];
     _nonces[owner] = current + 1;
+  }
+
+  function _checkTwapWindow(uint32 window) private pure {
+    if (window < 60) revert TwapWindowTooSmall();
+    if (window > 1800) revert TwapWindowTooLarge();
+  }
+
+  function _checkV3Pool(address pool) private view {
+    if (IUniswapV3Pool(pool).token0() != address(ayniToken)) revert TokenOrderMismatch();
+    if (IUniswapV3Pool(pool).token1() != address(usdtToken)) revert TokenOrderMismatch();
+    if (IUniswapV3Pool(pool).factory() != UNISWAP_V3_FACTORY) revert InvalidV3Pool();
   }
 }
